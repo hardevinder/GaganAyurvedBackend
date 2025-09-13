@@ -1,0 +1,2 @@
+-- Baseline migration: mark current DB state as applied.
+-- No schema changes here because the DB already matches this state.

@@ -1,0 +1,16 @@
+node_modules
+.env
+/src/generated/prisma
+
+# Prisma / DB backups
+*.dump
+*.sql
+*.bak
+backup*
+prisma-backup*
+*.zip
+*.tar
+*.tar.gz
+.DS_Store
+logs/
+dist/

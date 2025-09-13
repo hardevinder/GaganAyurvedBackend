@@ -1,0 +1,37 @@
+{
+  // Visit https://aka.ms/tsconfig to read more about this file
+  "compilerOptions": {
+    /* File Layout */
+    "rootDir": "./src",             // Source files live in src/
+    "outDir": "./dist",             // Compiled output goes to dist/
+
+    /* Environment Settings */
+    "module": "commonjs",           // Use "nodenext" if you want ES Modules
+    "target": "es2020",             // Output modern JS
+    "lib": ["es2020"],              // Include modern JS libs
+    "types": ["node"],              // Enable Node.js types
+    "esModuleInterop": true,        // Allow default imports for CJS
+    "moduleResolution": "node",     // How modules are resolved
+
+    /* Other Outputs */
+    "sourceMap": true,              // Generate source maps
+    "declaration": true,            // Generate .d.ts files
+    "declarationMap": true,         // Generate source maps for .d.ts
+
+    /* Stricter Typechecking Options */
+    "strict": true,                 // Enable all strict checks
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    /* Style Options */
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* Performance */
+    "skipLibCheck": true            // Skip type checks of .d.ts from node_modules
+  },
+  "include": ["src", "src/types"],  // 👈 ensure custom types are included
+  "exclude": ["node_modules", "dist"]
+}
