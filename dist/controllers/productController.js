@@ -435,9 +435,9 @@ function extractFormValue(raw) {
    --------------------------- */
 function safeLogError(request, err, ctx) {
     try {
-        const shortStack = (err && err.stack && String(err.stack).split("\n").slice(0, 2).join(" | ")) || undefined;
+        const shortStack = (err && err.stack && String(err.stack).split("\n").slice(0, 2).join("\n")) || undefined;
         const message = String(err && err.message ? err.message : err);
-        request.log?.error?.({ message, shortStack, ctx });
+        request.log?.error?.({ message, shortStack, ctx, errCode: err?.code, meta: err?.meta });
     }
     catch (_) {
         // eslint-disable-next-line no-console
@@ -468,17 +468,64 @@ function normalizeIncomingImage(i, index = 0) {
     };
 }
 /* ---------------------------
+   helper: build and validate variant list
+   - ensures name exists and decimal fields are strings
+   --------------------------- */
+function buildValidatedVariants(arr) {
+    const toNumberOrUndefined = (x) => {
+        if (x === null || x === undefined || x === "")
+            return undefined;
+        const n = Number(x);
+        return Number.isFinite(n) ? n : undefined;
+    };
+    return arr.map((v, idx) => {
+        const rawPrice = v.price ?? v.salePrice ?? v.mrp;
+        const priceNum = toNumberOrUndefined(rawPrice);
+        const nameVal = v.name == null ? undefined : String(v.name).trim();
+        if (!nameVal) {
+            throw Object.assign(new Error(`Variant at index ${idx} missing required field "name"`), { code: "INVALID_VARIANT" });
+        }
+        if (priceNum === undefined) {
+            throw Object.assign(new Error(`Variant at index ${idx} missing numeric price`), { code: "INVALID_VARIANT_PRICE" });
+        }
+        const priceStr = String(Number(priceNum).toFixed(2));
+        const mrpStr = v.mrp != null && v.mrp !== "" ? String(Number(v.mrp).toFixed(2)) : undefined;
+        const salePriceStr = v.salePrice != null && v.salePrice !== "" ? String(Number(v.salePrice).toFixed(2)) : undefined;
+        return {
+            name: nameVal,
+            sku: v.sku == null ? null : String(v.sku).trim() || null,
+            price: priceStr,
+            mrp: mrpStr,
+            salePrice: salePriceStr,
+            stock: v.stock != null && v.stock !== "" ? Number(v.stock) : undefined,
+            weightGrams: v.weightGrams != null && v.weightGrams !== "" ? Number(v.weightGrams) : undefined,
+        };
+    });
+}
+/* ---------------------------
    CREATE PRODUCT
 --------------------------- */
 const createProduct = async (request, reply) => {
     const bodyAny = request.body || {};
+    // read variants from body OR (request as any).fields (multipart attachFieldsToBody / fastify multipart)
     const { variants: bodyVariants, summary: bodySummary, brand: bodyBrand, categoryId: bodyCategoryId, isActive: bodyIsActive, metaTitle: bodyMetaTitle, metaDesc: bodyMetaDesc, } = bodyAny;
-    // Collect files (uploads)
+    // Accept variants field from either request.body or request.fields
+    const variantsField = bodyVariants ?? request.fields?.variants;
+    // Collect files (uploads) — only when request is multipart
     let files = [];
     try {
-        files = await collectFilesFromRequest(request);
-        // eslint-disable-next-line no-console
-        console.log("📂 Files collected in createProduct:", files);
+        const contentType = String(request.headers?.['content-type'] || '').toLowerCase();
+        if (contentType.startsWith('multipart/')) {
+            files = await collectFilesFromRequest(request);
+            // eslint-disable-next-line no-console
+            console.log("📂 Files collected in createProduct:", files);
+        }
+        else {
+            // not multipart — no files to collect
+            // eslint-disable-next-line no-console
+            console.log("📂 createProduct: non-multipart request, skipping file collection");
+            files = [];
+        }
     }
     catch (err) {
         safeLogError(request, err, "collectFilesFromRequest");
@@ -508,7 +555,7 @@ const createProduct = async (request, reply) => {
     const isActive = bodyIsActive === undefined ? true : extractFormValue(bodyIsActive) === "true" || bodyIsActive === true || extractFormValue(bodyIsActive) === "1";
     const metaTitle = extractFormValue(bodyMetaTitle) ?? undefined;
     const metaDesc = extractFormValue(bodyMetaDesc) ?? undefined;
-    const variants = bodyVariants;
+    const variants = variantsField;
     if (!name || !slug || !description) {
         await Promise.all(files.map((f) => (f && f.path ? deleteLocalFile(f.path) : Promise.resolve())));
         return reply.code(400).send({ error: "name, slug and description are required" });
@@ -559,33 +606,7 @@ const createProduct = async (request, reply) => {
         try {
             const arr = typeof variants === "string" ? JSON.parse(variants) : variants;
             if (Array.isArray(arr)) {
-                const toNumberOrUndefined = (x) => {
-                    if (x === null || x === undefined || x === "")
-                        return undefined;
-                    const n = Number(x);
-                    return Number.isFinite(n) ? n : undefined;
-                };
-                variantCreates = arr.map((v) => {
-                    const rawPrice = v.price ?? v.salePrice ?? v.mrp;
-                    return {
-                        name: v.name == null ? null : String(v.name),
-                        sku: v.sku == null ? null : String(v.sku),
-                        price: toNumberOrUndefined(rawPrice), // number | undefined
-                        mrp: toNumberOrUndefined(v.mrp),
-                        salePrice: toNumberOrUndefined(v.salePrice),
-                        stock: v.stock != null && v.stock !== "" ? Number(v.stock) : undefined,
-                        weightGrams: v.weightGrams != null && v.weightGrams !== "" ? Number(v.weightGrams) : undefined,
-                    };
-                });
-                // validate price presence (Prisma requires price)
-                const missingIdx = variantCreates.findIndex((vv) => vv.price === undefined);
-                if (missingIdx !== -1) {
-                    await Promise.all(files.map((f) => (f && f.path ? deleteLocalFile(f.path) : Promise.resolve())));
-                    return reply.code(400).send({
-                        error: "Each variant must include a numeric price. Provide `price`, or `salePrice`/`mrp` that can be parsed to a number.",
-                        detail: { index: missingIdx, sample: arr[missingIdx] },
-                    });
-                }
+                variantCreates = buildValidatedVariants(arr);
             }
         }
         catch (err) {
@@ -641,6 +662,8 @@ const createProduct = async (request, reply) => {
             await Promise.all(files.map((f) => (f && f.path ? deleteLocalFile(f.path) : Promise.resolve())));
         }
         catch (_) { }
+        // log more details for debugging
+        request.log?.error?.({ err, prismaErrorCode: err?.code, prismaMeta: err?.meta }, "createProduct error");
         safeLogError(request, err, "createProduct");
         if (err?.code === "P2002")
             return reply.code(409).send({ error: "Unique constraint failed", meta: err.meta });
@@ -739,20 +762,30 @@ exports.getProduct = getProduct;
 /* ---------------------------
    UPDATE PRODUCT
    - handles uploaded files, existingImages from client, and variant replace
-   --------------------------- */
+--------------------------- */
 const updateProduct = async (request, reply) => {
     const params = request.params || {};
     const id = Number(params.id);
     if (Number.isNaN(id))
         return reply.code(400).send({ error: "Invalid product id" });
     const bodyAny = request.body || {};
-    const { name: bodyName, slug: bodySlug, description: bodyDescription, summary: bodySummary, brand: bodyBrand, categoryId: bodyCategoryId, isActive: bodyIsActive, metaTitle: bodyMetaTitle, metaDesc: bodyMetaDesc, variants, removeImageIds, } = bodyAny;
-    // Collect files
+    const { name: bodyName, slug: bodySlug, description: bodyDescription, summary: bodySummary, brand: bodyBrand, categoryId: bodyCategoryId, isActive: bodyIsActive, metaTitle: bodyMetaTitle, metaDesc: bodyMetaDesc, variants: bodyVariants, removeImageIds, } = bodyAny;
+    // Accept variants from either request.body or request.fields
+    const variantsField = bodyVariants ?? request.fields?.variants;
+    // Collect files — only when request is multipart
     let files = [];
     try {
-        files = await collectFilesFromRequest(request);
-        // eslint-disable-next-line no-console
-        console.log("📂 Files collected in updateProduct:", files);
+        const contentType = String(request.headers?.['content-type'] || '').toLowerCase();
+        if (contentType.startsWith('multipart/')) {
+            files = await collectFilesFromRequest(request);
+            // eslint-disable-next-line no-console
+            console.log("📂 Files collected in updateProduct:", files);
+        }
+        else {
+            // eslint-disable-next-line no-console
+            console.log("📂 updateProduct: non-multipart request, skipping file collection");
+            files = [];
+        }
     }
     catch (err) {
         safeLogError(request, err, "collectFilesFromRequest(update)");
@@ -817,36 +850,11 @@ const updateProduct = async (request, reply) => {
     console.log("📝 existingImagesFromClient (update):", existingImagesFromClient);
     // variants parse + sanitize (derive price from price || salePrice || mrp)
     let variantReplaceCreates;
-    if (variants) {
+    if (variantsField) {
         try {
-            const arr = typeof variants === "string" ? JSON.parse(variants) : variants;
+            const arr = typeof variantsField === "string" ? JSON.parse(variantsField) : variantsField;
             if (Array.isArray(arr)) {
-                const toNumberOrUndefined = (x) => {
-                    if (x === null || x === undefined || x === "")
-                        return undefined;
-                    const n = Number(x);
-                    return Number.isFinite(n) ? n : undefined;
-                };
-                variantReplaceCreates = arr.map((v) => {
-                    const rawPrice = v.price ?? v.salePrice ?? v.mrp;
-                    return {
-                        name: v.name == null ? null : String(v.name),
-                        sku: v.sku == null ? null : String(v.sku),
-                        price: toNumberOrUndefined(rawPrice),
-                        mrp: toNumberOrUndefined(v.mrp),
-                        salePrice: toNumberOrUndefined(v.salePrice),
-                        stock: v.stock != null && v.stock !== "" ? Number(v.stock) : undefined,
-                        weightGrams: v.weightGrams != null && v.weightGrams !== "" ? Number(v.weightGrams) : undefined,
-                    };
-                });
-                const missingIdx = variantReplaceCreates.findIndex((vv) => vv.price === undefined);
-                if (missingIdx !== -1) {
-                    await Promise.all(files.map((f) => (f && f.path ? deleteLocalFile(f.path) : Promise.resolve())));
-                    return reply.code(400).send({
-                        error: "Each variant must include a numeric price. Provide `price`, or `salePrice`/`mrp` that can be parsed to a number.",
-                        detail: { index: missingIdx, sample: arr[missingIdx] },
-                    });
-                }
+                variantReplaceCreates = buildValidatedVariants(arr);
             }
         }
         catch (err) {
@@ -911,9 +919,22 @@ const updateProduct = async (request, reply) => {
                 data: updateData,
                 include: { images: true, variants: true, category: true },
             });
+            // Instead of createMany, create each variant individually (safer & clearer error handling)
             if (variantReplaceCreates) {
-                const mapped = variantReplaceCreates.map((v) => ({ ...v, productId: id }));
-                await tx.variant.createMany({ data: mapped });
+                for (const v of variantReplaceCreates) {
+                    await tx.variant.create({
+                        data: {
+                            productId: id,
+                            name: v.name,
+                            sku: v.sku ?? null,
+                            price: v.price, // already string
+                            mrp: v.mrp ?? undefined,
+                            salePrice: v.salePrice ?? undefined,
+                            stock: v.stock ?? undefined,
+                            weightGrams: v.weightGrams ?? undefined,
+                        },
+                    });
+                }
             }
             const final = await tx.product.findUnique({ where: { id }, include: { images: true, variants: true, category: true } });
             return { product: final, deletedImages: imagesToDelete };
@@ -971,6 +992,8 @@ const updateProduct = async (request, reply) => {
             await Promise.all(files.map((f) => (f && f.path ? deleteLocalFile(f.path) : Promise.resolve())));
         }
         catch (_) { }
+        // richer logging
+        request.log?.error?.({ err, prismaErrorCode: err?.code, prismaMeta: err?.meta }, "updateProduct error");
         safeLogError(request, err, "updateProduct");
         if (err?.code === "P2002")
             return reply.code(409).send({ error: "Unique constraint failed", meta: err.meta });
@@ -985,21 +1008,51 @@ exports.updateProduct = updateProduct;
 /* ---------------------------
    DELETE PRODUCT
 --------------------------- */
+/* ---------------------------
+   DELETE PRODUCT (safe)
+--------------------------- */
 const deleteProduct = async (request, reply) => {
     const params = request.params || {};
     const id = Number(params.id);
     if (Number.isNaN(id))
         return reply.code(400).send({ error: "Invalid product id" });
     try {
-        const deleted = await prisma.$transaction(async (tx) => {
-            const product = await tx.product.findUnique({ where: { id }, include: { images: true } });
+        // Run checks + deletes in a single transaction
+        const result = await prisma.$transaction(async (tx) => {
+            // fetch product with images and variants
+            const product = await tx.product.findUnique({
+                where: { id },
+                include: { images: true, variants: true },
+            });
             if (!product)
                 throw Object.assign(new Error("NotFound"), { code: "P2025" });
+            // If there are variants, check whether any OrderItem references them.
+            const variantIds = (product.variants || []).map((v) => v.id);
+            if (variantIds.length) {
+                // count order items that reference any of these variants
+                const itemsCount = await tx.orderItem.count({ where: { variantId: { in: variantIds } } });
+                if (itemsCount > 0) {
+                    // Prevent hard delete if there is order history pointing to these variants.
+                    // Throw a special error which we will handle below.
+                    throw Object.assign(new Error("ProductHasOrders"), { code: "HAS_ORDERS", itemsCount });
+                }
+            }
+            // Delete child images first to avoid FK constraint error
+            if (product.images && product.images.length) {
+                await tx.productImage.deleteMany({ where: { productId: id } });
+            }
+            // Safe to delete variants (we already checked order items)
+            if (variantIds.length) {
+                await tx.variant.deleteMany({ where: { productId: id } });
+            }
+            // Finally delete the product
             await tx.product.delete({ where: { id } });
-            return product;
+            // return product + images info so we can remove files from storage afterwards
+            return { images: product.images ?? [] };
         });
-        if (deleted.images && deleted.images.length) {
-            await Promise.all(deleted.images.map(async (img) => {
+        // After DB transaction succeeds: delete files from storage (S3/local)
+        if (result.images && result.images.length) {
+            await Promise.all(result.images.map(async (img) => {
                 if (!img?.url)
                     return;
                 if (STORAGE_DRIVER === "s3") {
@@ -1021,9 +1074,12 @@ const deleteProduct = async (request, reply) => {
                         if (key)
                             await deleteS3Object(key);
                     }
-                    catch (ex) { }
+                    catch (ex) {
+                        // ignore storage deletion errors
+                    }
                 }
                 else {
+                    // local filesystem
                     await deleteLocalFile(img.url);
                 }
             }));
@@ -1032,8 +1088,19 @@ const deleteProduct = async (request, reply) => {
     }
     catch (err) {
         safeLogError(request, err, "deleteProduct");
-        if (err?.code === "P2025" || err?.message === "NotFound")
+        // If product not found
+        if (err?.code === "P2025" || err?.message === "NotFound") {
             return reply.code(404).send({ error: "Product not found" });
+        }
+        // If we detected order items referencing variants -> do not delete; suggest soft-delete
+        if (err?.code === "HAS_ORDERS" || err?.message === "ProductHasOrders") {
+            const itemsCount = err?.itemsCount ?? undefined;
+            return reply.code(400).send({
+                error: "Cannot delete product: existing order history references this product's variants.",
+                detail: itemsCount != null ? { orderItemsReferencingVariants: Number(itemsCount) } : undefined,
+                suggestion: "Use soft-delete by setting isActive = false, or manually remove/adjust order data if you are sure.",
+            });
+        }
         return reply.code(500).send({ error: err?.message || "Internal error" });
     }
 };

@@ -1,4 +1,3 @@
-// src/controllers/adminOrdersController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PrismaClient } from "@prisma/client";
 
@@ -20,7 +19,6 @@ async function updateOrderFieldSafe(id: number, field: "orderStatus" | "paymentS
     // Preferred typed update (works when prisma client is up-to-date)
     const data: any = {};
     data[field] = value;
-    // @ts-expect-error dynamic access; runtime will enforce field existence
     return await prisma.order.update({ where: { id }, data });
   } catch (err: any) {
     const msg = String(err?.message || err || "");
@@ -169,11 +167,8 @@ export const shipOrder = async (request: FastifyRequest, reply: FastifyReply) =>
       const order = await prisma.order.update({
         where: { id },
         data: {
-          // @ts-expect-error may be absent on older client
           orderStatus: "shipped",
-          // @ts-expect-error may be absent on older client
           trackingNumber: trackingNumber ?? null,
-          // @ts-expect-error may be absent on older client
           shippedAt,
         },
         include: { items: true, user: true },
@@ -213,9 +208,7 @@ export const cancelOrder = async (request: FastifyRequest, reply: FastifyReply) 
         const updated = await tx.order.update({
           where: { id },
           data: {
-            // @ts-expect-error may be absent on older client
             orderStatus: "cancelled",
-            // @ts-expect-error may be absent on older client
             paymentStatus: order.paymentStatus === "paid" ? "refunded" : order.paymentStatus,
           },
         });

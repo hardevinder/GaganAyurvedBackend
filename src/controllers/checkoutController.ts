@@ -2,7 +2,8 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
-import { generateInvoicePdfForOrder } from "../services/invoiceService";
+// alias the real export so existing call sites keep working
+import { generateInvoicePdf as generateInvoicePdfForOrder } from "../services/invoiceService";
 import { sendOrderConfirmationEmail } from "../services/emailService";
 
 const prisma = new PrismaClient();
@@ -146,7 +147,8 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
         include: { items: { include: { variant: true } } },
       });
     } else {
-      cart = await findCartForCheckout({ userId, sessionId });
+      // avoid passing { userId: undefined } which conflicts with exactOptionalPropertyTypes
+      cart = await findCartForCheckout({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
     }
 
     if (!cart || !cart.items || cart.items.length === 0) {

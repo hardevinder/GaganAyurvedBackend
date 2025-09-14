@@ -1,4 +1,3 @@
-// src/controllers/admin/shippingRulesController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PrismaClient } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
@@ -85,36 +84,35 @@ function stateToPincodeRange(stateOrCode: string | undefined | null): [number, n
   if (map[s]) return map[s];
 
   // accept a few full-name variants mapping
-  const byName: Record<string, [number, number]> = {
-    "DELHI": map["DL"],
-    "HARYANA": map["HR"],
-    "PUNJAB": map["PB"],
-    "HIMACHAL PRADESH": map["HP"],
-    "JAMMU AND KASHMIR": map["JK"],
-    "UTTAR PRADESH": map["UP"],
-    "UTTARAKHAND": map["UK"],
-    "RAJASTHAN": map["RJ"],
-    "GUJARAT": map["GJ"],
-    "MAHARASHTRA": map["MH"],
-    "ANDHRA PRADESH": map["AP"],
-    "TELANGANA": map["TG"],
-    "KARNATAKA": map["KA"],
-    "TAMIL NADU": map["TN"],
-    "KERALA": map["KL"],
-    "WEST BENGAL": map["WB"],
-    "ODISHA": map["OR"],
-    "ASSAM": map["AS"],
-    "BIHAR": map["BR"],
-    "JHARKHAND": map["JH"],
-    "ANDAMAN AND NICOBAR ISLANDS": map["AN"],
-    "PUDUCHERRY": map["PY"],
-    "LADAKH": map["LA"],
-    "DADRA AND NAGAR HAVELI AND DAMAN AND DIU": map["DN"],
+  const byName: Record<string, [number, number] | undefined> = {
+    DELHI: map.DL,
+    HARYANA: map.HR,
+    PUNJAB: map.PB,
+    "HIMACHAL PRADESH": map.HP,
+    "JAMMU AND KASHMIR": map.JK,
+    "UTTAR PRADESH": map.UP,
+    UTTARAKHAND: map.UK,
+    RAJASTHAN: map.RJ,
+    GUJARAT: map.GJ,
+    MAHARASHTRA: map.MH,
+    "ANDHRA PRADESH": map.AP,
+    TELANGANA: map.TG,
+    KARNATAKA: map.KA,
+    "TAMIL NADU": map.TN,
+    KERALA: map.KL,
+    "WEST BENGAL": map.WB,
+    ODISHA: map.OR,
+    ASSAM: map.AS,
+    BIHAR: map.BR,
+    JHARKHAND: map.JH,
+    "ANDAMAN AND NICOBAR ISLANDS": map.AN,
+    PUDUCHERRY: map.PY,
+    LADAKH: map.LA,
+    "DADRA AND NAGAR HAVELI AND DAMAN AND DIU": map.DN,
   };
 
-  if (byName[s]) return byName[s];
-
-  return null;
+  const val = byName[s];
+  return val ?? null;
 }
 
 /* ---------------------------

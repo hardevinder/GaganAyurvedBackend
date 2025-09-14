@@ -1,1 +1,1 @@
-{"version":3,"file":"orders.d.ts","sourceRoot":"","sources":["../../src/routes/orders.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,eAAe,EAAE,MAAM,SAAS,CAAC;AAI1C,wBAA8B,WAAW,CAAC,OAAO,EAAE,eAAe,iBAGjE"}
+{"version":3,"file":"orders.d.ts","sourceRoot":"","sources":["../../src/routes/orders.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,eAAe,EAAE,MAAM,SAAS,CAAC;AAK1C,wBAA8B,WAAW,CAAC,OAAO,EAAE,eAAe,iBA0CjE"}

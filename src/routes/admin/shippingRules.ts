@@ -19,35 +19,36 @@ export default async function shippingRulesRoutes(
   // List & filter (admin)
   fastify.get(
     "/shipping-rules",
-    { preHandler: adminGuard, schema: { tags: ["admin", "shipping"] } },
+    // cast schema to any so additional keys like `tags` (used by swagger) are allowed
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "shipping"] } as any) },
     shippingCtrl.listShippingRules
   );
 
   // Create (admin)
   fastify.post(
     "/shipping-rules",
-    { preHandler: adminGuard, schema: { tags: ["admin", "shipping"] } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "shipping"] } as any) },
     shippingCtrl.createShippingRule
   );
 
   // Get single (admin)
   fastify.get(
     "/shipping-rules/:id",
-    { preHandler: adminGuard, schema: { tags: ["admin", "shipping"] } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "shipping"] } as any) },
     shippingCtrl.getShippingRule
   );
 
   // Update (admin)
   fastify.put(
     "/shipping-rules/:id",
-    { preHandler: adminGuard, schema: { tags: ["admin", "shipping"] } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "shipping"] } as any) },
     shippingCtrl.updateShippingRule
   );
 
   // Delete (admin)
   fastify.delete(
     "/shipping-rules/:id",
-    { preHandler: adminGuard, schema: { tags: ["admin", "shipping"] } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "shipping"] } as any) },
     shippingCtrl.deleteShippingRule
   );
 
@@ -71,7 +72,8 @@ export default async function shippingRulesRoutes(
   fastify.get(
     "/shipping/calculate",
     {
-      schema: {
+      // cast schema to any to allow `tags` and keep friendly typing for swagger
+      schema: ({
         tags: ["shipping"],
         querystring: {
           type: "object",
@@ -81,7 +83,7 @@ export default async function shippingRulesRoutes(
           },
           required: ["pincode"],
         },
-      },
+      } as any),
     },
     async (request, reply) => {
       try {

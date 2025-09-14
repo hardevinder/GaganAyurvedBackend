@@ -7,9 +7,7 @@ import { createReadStream } from "fs";
 
 const prisma = new PrismaClient();
 
-/**
- * Safe error logger — keeps logs compact and avoids throwing inside logger.
- */
+/* Safe logger */
 function safeLogError(request: any, err: any, ctx?: string) {
   try {
     const shortStack =
@@ -22,10 +20,7 @@ function safeLogError(request: any, err: any, ctx?: string) {
   }
 }
 
-/**
- * Serialize order row for client consumption.
- * Converts numeric monetary fields to strings to avoid floating precision surprises in clients.
- */
+/* Serialize */
 function serializeOrderForClient(raw: any) {
   if (!raw) return raw;
   return {
@@ -60,14 +55,7 @@ function serializeOrderForClient(raw: any) {
   };
 }
 
-/**
- * Resolve an invoice path safely:
- * - If invoicePdfPath is absolute and inside the invoices dir, accept it.
- * - Otherwise, treat invoicePdfPath as a relative path (or filename) under invoicesDir.
- * - Reject anything that would escape invoicesDir.
- *
- * Returns the resolved absolute path string or null if invalid/refused.
- */
+/* invoice path resolver (safe) */
 async function resolveInvoiceFilePath(invoicePdfPath: string | null | undefined) {
   const invoicesDir = process.env.INVOICE_UPLOAD_DIR
     ? path.resolve(process.env.INVOICE_UPLOAD_DIR)
@@ -75,35 +63,75 @@ async function resolveInvoiceFilePath(invoicePdfPath: string | null | undefined)
 
   if (!invoicePdfPath) return null;
 
-  // Candidate: if stored value is absolute, resolve and ensure it's under invoicesDir
   const absoluteCandidate = path.resolve(invoicePdfPath);
-  if (absoluteCandidate.startsWith(invoicesDir)) {
+  const relFromInvoices = path.relative(invoicesDir, absoluteCandidate);
+  if (!relFromInvoices.startsWith("..") && relFromInvoices !== "") {
     return absoluteCandidate;
   }
 
-  // Otherwise normalize stored path and join under invoicesDir.
-  // Remove any prefixed "../" sequences to avoid traversal; keep safe relative subfolders like "2025/..."
   const normalized = path.normalize(invoicePdfPath).replace(/^(\.\.[/\\])+/, "");
   const candidate = path.resolve(invoicesDir, normalized);
-
-  if (!candidate.startsWith(invoicesDir)) return null;
+  const rel = path.relative(invoicesDir, candidate);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return null;
+  }
   return candidate;
 }
 
-/**
- * GET /api/orders/:orderNumber
- * Authorization rules:
- *  - If request.userId present => allow if order.userId === request.userId OR guest token matches.
- *  - If no request.userId => guest token must be present and match order.guestAccessToken.
- */
+/* ---------------------------
+   LIST ORDERS (public / authenticated)
+   Supports optional q (text search), page, pageSize
+--------------------------- */
+export const listOrders = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const q = (request.query as any)?.q ?? undefined;
+    const page = Math.max(Number((request.query as any)?.page ?? 1), 1);
+    const pageSize = Math.min(Math.max(Number((request.query as any)?.pageSize ?? 20), 1), 200);
+    const skip = (page - 1) * pageSize;
+
+    const where: any = {};
+
+    // If request has userId (from auth plugin), filter to that user (admins should use admin endpoints)
+    const reqAny: any = request;
+    const userId = reqAny.userId ? Number(reqAny.userId) : undefined;
+    if (userId) where.userId = userId;
+
+    if (q) {
+      where.OR = [
+        { orderNumber: { contains: q, mode: "insensitive" } },
+        { customerEmail: { contains: q, mode: "insensitive" } },
+        { customerName: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const [orders, total] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: { items: true, user: true },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: pageSize,
+      }),
+      prisma.order.count({ where }),
+    ]);
+
+    return reply.send({
+      data: orders.map(serializeOrderForClient),
+      meta: { total, page, pageSize },
+    });
+  } catch (err: any) {
+    safeLogError(request, err, "listOrders");
+    return reply.code(500).send({ error: err?.message || "Internal error" });
+  }
+};
+
+/* GET /api/orders/:orderNumber */
 export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const params: any = request.params || {};
     const orderNumber = String(params.orderNumber || "");
-
     if (!orderNumber) return reply.code(400).send({ error: "orderNumber required" });
 
-    // Load order (include items for client)
     const order = await prisma.order.findUnique({
       where: { orderNumber },
       include: { items: true, user: true },
@@ -112,20 +140,17 @@ export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const reqAny: any = request;
     const userId: number | undefined = reqAny.userId;
-    const guestToken: string | undefined =
-      reqAny.guestToken ?? (request.query && (request.query as any).token);
+    const guestToken: string | undefined = reqAny.guestToken ?? (request.query && (request.query as any).token);
 
-    // Authorization
     if (userId) {
       if (order.userId !== null && Number(order.userId) === Number(userId)) {
         // allowed
       } else if (order.guestAccessToken && guestToken && order.guestAccessToken === guestToken) {
-        // allowed (logged-in + guest token)
+        // allowed
       } else {
         return reply.code(403).send({ error: "Forbidden" });
       }
     } else {
-      // not authenticated => require a matching guest token
       if (!guestToken || order.guestAccessToken !== guestToken) {
         return reply.code(403).send({ error: "Forbidden - guest token required" });
       }
@@ -138,10 +163,7 @@ export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => 
   }
 };
 
-/**
- * GET /api/orders/:orderNumber/invoice.pdf
- * Streams the invoice PDF to the client if present and authorized.
- */
+/* GET /api/orders/:orderNumber/invoice.pdf */
 export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const params: any = request.params || {};
@@ -153,10 +175,8 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
 
     const reqAny: any = request;
     const userId: number | undefined = reqAny.userId;
-    const guestToken: string | undefined =
-      reqAny.guestToken ?? (request.query && (request.query as any).token);
+    const guestToken: string | undefined = reqAny.guestToken ?? (request.query && (request.query as any).token);
 
-    // Authorization (same as getOrder)
     if (userId) {
       if (order.userId !== null && Number(order.userId) === Number(userId)) {
         // ok
@@ -182,7 +202,6 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
       return reply.code(400).send({ error: "Invalid invoice path" });
     }
 
-    // Ensure file exists and is a file; use async fs.stat
     let stats;
     try {
       stats = await fs.stat(resolved);
@@ -195,13 +214,19 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
       return reply.code(404).send({ error: "Invoice PDF not found" });
     }
 
-    // Set headers and stream the file
     reply.header("Content-Type", "application/pdf");
-    // Use attachment to force download; change to inline if you prefer preview in browser
-    reply.header("Content-Disposition", `attachment; filename="${order.orderNumber}.pdf"`);
+    const filename = `${order.orderNumber}.pdf`.replace(/["\\]/g, "");
+    reply.header("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
     reply.header("Content-Length", String(stats.size));
 
     const stream = createReadStream(resolved);
+    stream.once("error", (err) => {
+      safeLogError(request, err, "invoiceStreamError");
+      try {
+        reply.code(500).send({ error: "Error streaming invoice PDF" });
+      } catch (_) {}
+    });
+
     return reply.send(stream);
   } catch (err: any) {
     safeLogError(request, err, "getInvoicePdf");
@@ -210,6 +235,7 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
 };
 
 export default {
+  listOrders,
   getOrder,
   getInvoicePdf,
 };

@@ -1,3 +1,4 @@
+// src/routes/admin/orders.ts
 import { FastifyInstance, FastifyPluginOptions } from "fastify";
 import {
   listOrders,
@@ -18,16 +19,16 @@ const idParamSchema = {
 export default async function adminOrdersRoutes(
   fastify: FastifyInstance,
   _opts: FastifyPluginOptions
-) {
+): Promise<void> {
   fastify.get(
     "/orders",
-    { preHandler: adminGuard, schema: { tags: ["admin", "orders"] } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "orders"] } as any) },
     listOrders
   );
 
   fastify.get(
     "/orders/:id",
-    { preHandler: adminGuard, schema: { tags: ["admin", "orders"], params: idParamSchema } },
+    { preHandler: adminGuard, schema: ({ tags: ["admin", "orders"], params: idParamSchema } as any) },
     getOrder
   );
 
@@ -35,15 +36,20 @@ export default async function adminOrdersRoutes(
     "/orders/:id/status",
     {
       preHandler: adminGuard,
-      schema: {
+      schema: ({
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
           type: "object",
           required: ["status"],
-          properties: { status: { type: "string", enum: ["pending","processing","shipped","delivered","cancelled","returned"] } },
+          properties: {
+            status: {
+              type: "string",
+              enum: ["pending", "processing", "shipped", "delivered", "cancelled", "returned"],
+            },
+          },
         },
-      },
+      } as any),
     },
     updateOrderStatus
   );
@@ -52,15 +58,17 @@ export default async function adminOrdersRoutes(
     "/orders/:id/payment",
     {
       preHandler: adminGuard,
-      schema: {
+      schema: ({
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
           type: "object",
           required: ["paymentStatus"],
-          properties: { paymentStatus: { type: "string", enum: ["pending","paid","failed","refunded"] } },
+          properties: {
+            paymentStatus: { type: "string", enum: ["pending", "paid", "failed", "refunded"] },
+          },
         },
-      },
+      } as any),
     },
     updatePaymentStatus
   );
@@ -69,7 +77,7 @@ export default async function adminOrdersRoutes(
     "/orders/:id/ship",
     {
       preHandler: adminGuard,
-      schema: {
+      schema: ({
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
@@ -78,7 +86,7 @@ export default async function adminOrdersRoutes(
             trackingNumber: { type: ["string", "null"] },
           },
         },
-      },
+      } as any),
     },
     shipOrder
   );
@@ -87,14 +95,14 @@ export default async function adminOrdersRoutes(
     "/orders/:id/cancel",
     {
       preHandler: adminGuard,
-      schema: {
+      schema: ({
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
           type: "object",
           properties: { restock: { type: "boolean", default: true } },
         },
-      },
+      } as any),
     },
     cancelOrder
   );

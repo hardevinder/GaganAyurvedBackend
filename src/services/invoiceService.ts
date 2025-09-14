@@ -2,6 +2,9 @@
 import fs from "fs";
 import fsPromises from "fs/promises";
 import path from "path";
+// pdfkit has no bundled TypeScript types in many setups — silence the import error here.
+// You can alternatively add `declare module "pdfkit";` in a global d.ts file.
+ // @ts-ignore
 import PDFDocument from "pdfkit";
 
 /**
@@ -83,10 +86,10 @@ export async function generateInvoicePdf(
         return reject(err);
       }
 
-      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      const doc = new (PDFDocument as any)({ size: "A4", margin: 50 });
 
       // Reject on PDFKit errors
-      doc.on("error", (err) => {
+      doc.on("error", (err: any) => {
         // ensure stream closed
         try {
           writeStream.destroy();
@@ -95,7 +98,7 @@ export async function generateInvoicePdf(
       });
 
       // Reject if stream errors
-      writeStream.on("error", (err) => {
+      writeStream.on("error", (err: any) => {
         try {
           doc.end();
         } catch (_) {}
@@ -115,10 +118,9 @@ export async function generateInvoicePdf(
         doc.fontSize(20).text("Invoice", { align: "right" });
         doc.moveDown(0.25);
         doc.fontSize(10).text(`Order: ${orderNumber}`, { align: "right" });
-        doc.text(
-          `Date: ${new Date(order?.createdAt ?? Date.now()).toLocaleString()}`,
-          { align: "right" }
-        );
+        doc.text(`Date: ${new Date(order?.createdAt ?? Date.now()).toLocaleString()}`, {
+          align: "right",
+        });
 
         doc.moveDown(1);
 
@@ -155,14 +157,20 @@ export async function generateInvoicePdf(
           const col5 = startX + 460; // total
 
           // header row
-          doc.font("Helvetica-Bold");
+          try {
+            doc.font("Helvetica-Bold");
+          } catch (_) {
+            // ignore font switching if unavailable
+          }
           doc.text("Description", col1, undefined, { width: 240 });
           doc.text("SKU", col2, doc.y, { width: 80 });
           doc.text("Qty", col3, doc.y, { width: 40 });
           doc.text("Price", col4, doc.y, { width: 80, align: "right" });
           doc.text("Total", col5, doc.y, { width: 80, align: "right" });
           doc.moveDown(0.5);
-          doc.font("Helvetica");
+          try {
+            doc.font("Helvetica");
+          } catch (_) {}
 
           for (const it of items) {
             const desc = String(it.productName ?? it.variantName ?? "Item");
@@ -196,9 +204,13 @@ export async function generateInvoicePdf(
         doc.text(`Tax: ${tax}`, rightColX, undefined, { align: "left" });
         doc.text(`Discount: ${discount}`, rightColX, undefined, { align: "left" });
         doc.moveDown(0.2);
-        doc.font("Helvetica-Bold");
+        try {
+          doc.font("Helvetica-Bold");
+        } catch (_) {}
         doc.text(`Grand Total: ${grandTotal}`, rightColX, undefined, { align: "left" });
-        doc.font("Helvetica");
+        try {
+          doc.font("Helvetica");
+        } catch (_) {}
 
         doc.moveDown(2);
         doc.fontSize(10).text("Thank you for your purchase!", { align: "center" });

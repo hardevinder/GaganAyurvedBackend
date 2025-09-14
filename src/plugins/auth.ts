@@ -6,9 +6,7 @@ declare module "fastify" {
     requireAuth: (request: any, reply: any) => Promise<void>;
     optionalAuthOrGuestToken: (request: any, reply: any) => Promise<void>;
   }
-}
 
-declare module "fastify" {
   interface FastifyRequest {
     userId?: number | null;
     guestToken?: string | null;
@@ -17,7 +15,10 @@ declare module "fastify" {
 
 const authPlugin: FastifyPluginAsync = async (fastify) => {
   // ensure request properties exist as nullable so handlers can read them
+  // use decorateRequest to add typed properties at runtime
+  // @ts-ignore - decorateRequest added property typings above via module augmentation
   fastify.decorateRequest("userId", null);
+  // @ts-ignore
   fastify.decorateRequest("guestToken", null);
 
   /**
@@ -26,7 +27,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.decorate("requireAuth", async (request: any, reply: any) => {
     try {
       // fastify-jwt exposes request.jwtVerify()
-      const payload = await request.jwtVerify();
+      const payload: any = await request.jwtVerify();
       // try common fields: userId or sub
       const uid = payload?.userId ?? (payload?.sub ? Number(payload.sub) : undefined);
       if (!uid) {
@@ -45,10 +46,10 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
    * optionalAuthOrGuestToken - preHandler that attempts to extract auth info,
    * but does NOT reject; it simply sets request.userId or request.guestToken if available.
    */
-  fastify.decorate("optionalAuthOrGuestToken", async (request: any, reply: any) => {
+  fastify.decorate("optionalAuthOrGuestToken", async (request: any, _reply: any) => {
     // try JWT verify silently
     try {
-      const payload = await request.jwtVerify();
+      const payload: any = await request.jwtVerify();
       const uid = payload?.userId ?? (payload?.sub ? Number(payload.sub) : undefined);
       if (uid) request.userId = Number(uid);
     } catch (err) {
@@ -58,9 +59,13 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
 
     // guest token may be in ?token=... or header x-guest-token or Authorization: Guest <token>
     const qtoken = (request.query && (request.query as any).token) || null;
+
+    // header keys may be lowercased by the runtime; check both common variants safely
     const hdrToken =
-      (request.headers && (request.headers["x-guest-token"] || request.headers["x-guest-token".toLowerCase()])) || null;
-    const authHeader = request.headers?.authorization || request.headers?.Authorization || null;
+      (request.headers && (request.headers["x-guest-token"] || request.headers["X-Guest-Token"])) || null;
+
+    const authHeaderRaw =
+      (request.headers && (request.headers.authorization || (request.headers as any).Authorization)) || null;
 
     if (qtoken && typeof qtoken === "string") {
       request.guestToken = qtoken;
@@ -70,13 +75,14 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
       request.guestToken = hdrToken;
       return;
     }
-    if (typeof authHeader === "string") {
-      const parts = authHeader.split(/\s+/);
-      if (parts.length === 2 && parts[0].toLowerCase() === "guest") {
+    if (typeof authHeaderRaw === "string") {
+      // safe split — authHeaderRaw is string so parts will be an array
+      const parts = authHeaderRaw.split(/\s+/);
+      if (Array.isArray(parts) && parts.length === 2 && parts[0]?.toLowerCase() === "guest") {
         request.guestToken = parts[1];
       }
     }
-    // nothing else to do; this function intentionally does not reply/throw
+    // intentionally do not reply/throw; this function is permissive
   });
 };
 

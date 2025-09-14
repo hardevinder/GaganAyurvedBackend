@@ -24,7 +24,7 @@ import checkoutRoutes from "./routes/checkout";
 import shippingRulesRoutes from "./routes/admin/shippingRules"; // admin shipping rules routes
 import * as shippingCtrl from "./controllers/admin/shippingRulesController"; // for computeShippingForPincode
 
-import adminOrdersRoutes from "./routes/admin/orders"; // <-- NEW: admin orders routes
+import adminOrdersRoutes from "./routes/admin/orders"; // admin orders routes
 
 import authPlugin from "./plugins/auth"; // optionalAuthOrGuestToken / requireAuth
 
@@ -115,9 +115,13 @@ async function start() {
     });
 
     // Register cookie plugin so handlers can read/set cookies (sessionId)
-    await app.register(fastifyCookie, {
-      secret: process.env.COOKIE_SECRET || undefined,
-    });
+    // Build options object only with defined properties to satisfy strict typing
+    const cookieOptions: Record<string, unknown> = {};
+    if (process.env.COOKIE_SECRET && process.env.COOKIE_SECRET !== "") {
+      cookieOptions.secret = process.env.COOKIE_SECRET;
+    }
+    // cast to any to avoid exactOptionalPropertyTypes mismatch in some environments
+    await app.register(fastifyCookie as any, cookieOptions as any);
 
     // Ensure upload directories exist BEFORE registering static file serving
     await ensureDir(UPLOAD_DIR);
@@ -246,7 +250,7 @@ async function start() {
     // 7) Register admin routes (shipping rules & orders) BEFORE other app routes so admin prefix is reserved
     // These routes include a preHandler that checks request.user?.isAdmin (see route files).
     app.register(shippingRulesRoutes, { prefix: "/api/admin" });
-    app.register(adminOrdersRoutes, { prefix: "/api/admin" }); // <-- NEW
+    app.register(adminOrdersRoutes, { prefix: "/api/admin" }); // admin orders routes
 
     /**
      * Public shipping calculation endpoint

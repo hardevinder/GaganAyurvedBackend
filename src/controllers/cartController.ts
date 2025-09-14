@@ -1,8 +1,6 @@
-// src/controllers/cartController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
-import cookie from "cookie";
 
 const prisma = new PrismaClient();
 
@@ -146,7 +144,7 @@ export const getCart = async (request: FastifyRequest, reply: FastifyReply) => {
       } catch {}
     }
 
-    let cart = await findCart({ userId, sessionId });
+    let cart = await findCart({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
     if (!cart) {
       // return empty skeleton rather than 404
       const empty = { id: null, userId: userId ?? null, sessionId: sessionId ?? null, items: [] };
@@ -197,9 +195,9 @@ export const addToCart = async (request: FastifyRequest, reply: FastifyReply) =>
       return reply.code(400).send({ error: "Insufficient stock", available: variant.stock });
     }
 
-    let cart = await findCart({ userId, sessionId });
+    let cart = await findCart({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
     if (!cart) {
-      cart = await createCart({ userId, sessionId });
+      cart = await createCart({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
     }
 
     const updatedCart = await prisma.$transaction(async (tx) => {
@@ -249,7 +247,7 @@ export const addToCart = async (request: FastifyRequest, reply: FastifyReply) =>
           reply.setCookie("sessionId", newSessionIdToReturn, {
             path: "/",
             httpOnly: false,
-            sameSite: "Lax",
+            sameSite: "lax",
             maxAge: 60 * 60 * 24 * 30,
           });
         }
@@ -375,7 +373,7 @@ export const clearCart = async (request: FastifyRequest, reply: FastifyReply) =>
     if (cartId) {
       cart = await prisma.cart.findUnique({ where: { id: cartId }, include: { items: { include: { variant: true } } } });
     } else {
-      cart = await findCart({ userId, sessionId });
+      cart = await findCart({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
     }
 
     if (!cart) {
