@@ -9,7 +9,7 @@ import fastifyStatic from "@fastify/static";
 import fastifyCookie from "@fastify/cookie";
 import path from "path";
 import fs from "fs/promises";
-import { existsSync, mkdirSync, createWriteStream } from "fs";
+import { existsSync, mkdirSync } from "fs";
 
 import prismaPlugin from "./config/prisma";
 import authRoutes from "./routes/auth";
@@ -21,25 +21,23 @@ import categoriesRoutes from "./routes/categories";
 import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
 
-import shippingRulesRoutes from "./routes/admin/shippingRules"; // admin shipping rules routes
-import * as shippingCtrl from "./controllers/admin/shippingRulesController"; // for computeShippingForPincode
-
-import adminOrdersRoutes from "./routes/admin/orders"; // admin orders routes
-
-import authPlugin from "./plugins/auth"; // optionalAuthOrGuestToken / requireAuth
+import shippingRulesRoutes from "./routes/admin/shippingRules";
+import * as shippingCtrl from "./controllers/admin/shippingRulesController";
+import adminOrdersRoutes from "./routes/admin/orders";
+import authPlugin from "./plugins/auth";
 
 const isProd = process.env.NODE_ENV === "production";
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 1200);
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Comma-separated list of allowed frontend origins in prod
 const FRONTEND_ORIGINS = isProd
   ? (process.env.FRONTEND_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [])
-  : ["http://localhost:3000"]; // dev default
+  : ["http://localhost:3000"];
 
 const app = Fastify({
   logger: true,
-  trustProxy: true, // important behind proxies/load balancers
+  trustProxy: true,
 });
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads", "products");
@@ -52,7 +50,6 @@ async function ensureDir(dirPath: string) {
 
 async function start() {
   try {
-    // global safety handlers
     process.on("unhandledRejection", (err) => {
       app.log.error(err, "unhandledRejection");
     });
@@ -60,13 +57,13 @@ async function start() {
       app.log.error(err, "uncaughtException");
     });
 
-    // 1) Security headers
+    // Security headers
     await app.register(helmet, {
       contentSecurityPolicy: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
     });
 
-    // 2) Basic rate limiting
+    // Rate limiting
     await app.register(rateLimit, {
       max: 300,
       timeWindow: "1 minute",
@@ -76,13 +73,23 @@ async function start() {
       },
     });
 
-    // 3) CORS — allow edit verbs + Authorization header
+    // Log allowed origins
+    app.log.info({ FRONTEND_ORIGINS, isProd }, "Allowed CORS origins");
+
+    // CORS
     await app.register(cors, {
       origin: (origin, cb) => {
-        // allow server-to-server requests (no origin like curl)
-        if (!origin) return cb(null, true);
+        if (!origin) return cb(null, true); // server-to-server or curl
 
-        const allowed = FRONTEND_ORIGINS.length > 0 && FRONTEND_ORIGINS.includes(origin);
+        if (FRONTEND_ORIGINS.length === 0) {
+          app.log.warn({ origin }, "CORS: no FRONTEND_ORIGINS set, denying origin");
+          return cb(null, false);
+        }
+
+        const allowed = FRONTEND_ORIGINS.includes(origin);
+        if (!allowed) {
+          app.log.warn({ origin }, "CORS blocked origin");
+        }
         cb(null, allowed);
       },
       methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -92,20 +99,15 @@ async function start() {
       maxAge: 86400,
     });
 
-    // 4) JWT — Bearer tokens
+    // JWT
     await app.register(fastifyJwt, {
       secret: process.env.JWT_SECRET || "supersecret",
     });
 
-    // register auth helpers plugin (decorate with optionalAuthOrGuestToken / requireAuth)
     await app.register(authPlugin);
-
-    // 5) Prisma
     await app.register(prismaPlugin);
 
-    //
-    // IMPORTANT: register multipart BEFORE routes that need file uploads.
-    //
+    // Multipart
     await app.register(fastifyMultipart, {
       limits: {
         fileSize: Number(process.env.UPLOAD_FILE_SIZE_LIMIT || 50 * 1024 * 1024),
@@ -114,149 +116,33 @@ async function start() {
       attachFieldsToBody: true,
     });
 
-    // Register cookie plugin so handlers can read/set cookies (sessionId)
-    // Build options object only with defined properties to satisfy strict typing
+    // Cookies
     const cookieOptions: Record<string, unknown> = {};
     if (process.env.COOKIE_SECRET && process.env.COOKIE_SECRET !== "") {
       cookieOptions.secret = process.env.COOKIE_SECRET;
     }
-    // cast to any to avoid exactOptionalPropertyTypes mismatch in some environments
     await app.register(fastifyCookie as any, cookieOptions as any);
 
-    // Ensure upload directories exist BEFORE registering static file serving
+    // Upload dirs
     await ensureDir(UPLOAD_DIR);
     await ensureDir(INVOICES_DIR);
 
-    // 6) Static files (important for serving product images)
+    // Static files
     await app.register(fastifyStatic, {
       root: path.join(process.cwd(), "uploads", "products"),
       prefix: "/uploads/products/",
       decorateReply: false,
     });
-
-    // Serve invoices directory statically as well (optional)
     await app.register(fastifyStatic, {
       root: path.join(process.cwd(), "uploads", "invoices"),
       prefix: "/uploads/invoices/",
       decorateReply: false,
     });
 
-    // Optional debug route to help diagnose uploads (safe + writes files)
-    app.post("/debug-upload", async (req, reply) => {
-      req.log.info({ headers: req.headers }, "debug-upload headers");
-      try {
-        await ensureDir(UPLOAD_DIR);
-
-        const bodyAny: any = req.body || {};
-        const bodyPreview: Record<string, any> = {};
-        for (const k of Object.keys(bodyAny)) {
-          const v = bodyAny[k];
-          if (v instanceof Buffer) bodyPreview[k] = `[Buffer ${v.length} bytes]`;
-          else if (typeof v === "object") bodyPreview[k] = JSON.stringify(Object.keys(v)).slice(0, 200);
-          else bodyPreview[k] = v;
-        }
-
-        const seen: any[] = [];
-        const anyReq: any = req;
-
-        if (typeof anyReq.multipart === "function") {
-          await new Promise<void>((resolve, reject) => {
-            try {
-              anyReq.multipart(
-                async (field: string, stream: NodeJS.ReadableStream, filename: string, _encoding: string, mimetype: string) => {
-                  void _encoding;
-                  const ext = path.extname(filename || "");
-                  const base = (path.basename(filename || "file", ext) || "file").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "");
-                  const outName = `${base}_${Date.now()}${ext}`;
-                  const outPath = path.join(UPLOAD_DIR, outName);
-
-                  const writeStream = createWriteStream(outPath);
-                  try {
-                    for await (const chunk of stream as any) {
-                      writeStream.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-                    }
-                    writeStream.end();
-                    await new Promise<void>((res) => writeStream.on("close", () => res()));
-                    const stat = await fs.stat(outPath);
-                    seen.push({ type: "file", field, filename, savedAs: outName, size: stat.size, mimetype });
-                  } catch (e) {
-                    try {
-                      writeStream.destroy();
-                    } catch (_) {}
-                    reject(e);
-                  }
-                },
-                (err: any, fields: Record<string, any> | undefined) => {
-                  if (err) return reject(err);
-                  if (fields) {
-                    for (const fk of Object.keys(fields)) {
-                      seen.push({ type: "field", field: fk, value: String(fields[fk]).slice(0, 400) });
-                    }
-                  }
-                  resolve();
-                }
-              );
-            } catch (ex) {
-              reject(ex);
-            }
-          });
-        } else if (typeof anyReq.parts === "function") {
-          for await (const p of anyReq.parts()) {
-            if (p.file) {
-              const filename = p.filename || "file";
-              const ext = path.extname(filename);
-              const base = path.basename(filename, ext).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "");
-              const outName = `${base}_${Date.now()}${ext}`;
-              const outPath = path.join(UPLOAD_DIR, outName);
-
-              const writeStream = createWriteStream(outPath);
-              let total = 0;
-              for await (const chunk of p.file) {
-                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-                total += buf.length;
-                writeStream.write(buf);
-              }
-              writeStream.end();
-              await new Promise<void>((r) => writeStream.on("close", () => r()));
-              seen.push({ type: "file", field: p.fieldname, filename, savedAs: outName, size: total, mimetype: p.mimetype });
-            } else {
-              seen.push({ type: "field", field: p.fieldname, value: String(p.value).slice(0, 400) });
-            }
-          }
-        } else {
-          if (bodyAny.images) {
-            const arr = Array.isArray(bodyAny.images) ? bodyAny.images : [bodyAny.images];
-            for (const f of arr) {
-              if (f && typeof f === "object") {
-                seen.push({
-                  type: "attached-file-object",
-                  originalname: f.filename || f.originalname || f.name,
-                  filepath: f.filepath || f.path || undefined,
-                  mimetype: f.mimetype || f.type || undefined,
-                });
-              }
-            }
-          }
-        }
-
-        req.log.info({ bodyPreview, seen }, "debug-upload data (safe)");
-        return reply.send({ ok: true, body: bodyPreview, seen });
-      } catch (err: any) {
-        req.log.error(err, "debug-upload error");
-        return reply.code(500).send({ error: err?.message || "err" });
-      }
-    });
-
-    // 7) Register admin routes (shipping rules & orders) BEFORE other app routes so admin prefix is reserved
-    // These routes include a preHandler that checks request.user?.isAdmin (see route files).
+    // Routes
     app.register(shippingRulesRoutes, { prefix: "/api/admin" });
-    app.register(adminOrdersRoutes, { prefix: "/api/admin" }); // admin orders routes
+    app.register(adminOrdersRoutes, { prefix: "/api/admin" });
 
-    /**
-     * Public shipping calculation endpoint
-     * GET /api/shipping/calculate?pincode=XXXXX&subtotal=NNN
-     * - no auth, lightweight validation, re-uses controller helper computeShippingForPincode
-     */
     app.get("/api/shipping/calculate", async (request, reply) => {
       try {
         const q: any = request.query || {};
@@ -279,7 +165,6 @@ async function start() {
           if (Number.isFinite(s)) subtotal = s;
         }
 
-        // reuse controller helper
         const result = await shippingCtrl.computeShippingForPincode(pincode, subtotal);
 
         return reply.send({
@@ -291,14 +176,11 @@ async function start() {
           },
         });
       } catch (err: any) {
-        try {
-          (request as any).log?.error?.({ err: err?.message ?? err, ctx: "shippingCalculate" });
-        } catch {}
+        app.log.error({ err }, "shippingCalculate error");
         return reply.code(500).send({ error: err?.message || "Internal error" });
       }
     });
 
-    // 8) Register application routes (after admin routes)
     app.register(authRoutes, { prefix: "/api/auth" });
     app.register(userRoutes, { prefix: "/api" });
     app.register(productRoutes, { prefix: "/api" });
@@ -311,20 +193,11 @@ async function start() {
     // health check
     app.get("/health", async () => ({ ok: true }));
 
-    // ready + print routes (dev)
     await app.ready();
-    if (!isProd) {
-      app.log.info({ FRONTEND_ORIGINS }, "Allowed CORS origins");
-      console.log("\n=== ROUTES ===");
-      console.log(app.printRoutes());
-      console.log("==============\n");
-    }
 
-    // listen
     await app.listen({ port: PORT, host: HOST });
-    console.log(`🚀 Server running at http://${HOST}:${PORT}`);
+    app.log.info(`🚀 Server running at http://${HOST}:${PORT}`);
 
-    // graceful shutdown
     const close = async () => {
       try {
         await app.close();
@@ -343,3 +216,8 @@ async function start() {
 }
 
 start();
+
+// Root route
+app.get("/", async () => {
+  return { ok: true, message: "Welcome to GaganAyurveda API" };
+});

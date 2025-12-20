@@ -183,24 +183,19 @@ model Order {
   orderNumber      String      @unique
   paymentMethod    String
   paymentStatus    String      @default("pending")
-
-  // NEW: order lifecycle and shipping fields
-  orderStatus      String      @default("pending")
-  trackingNumber   String?
-  shippedAt        DateTime?
-
   shipping         Decimal?    @db.Decimal(12, 2)
   shippingAddress  Json
   subtotal         Decimal     @db.Decimal(12, 2)
   tax              Decimal?    @db.Decimal(12, 2)
+  orderStatus      String?     @db.VarChar(50)
+  trackingNumber   String?
+  shippedAt        DateTime?   @db.Timestamptz(6)
   user             User?       @relation(fields: [userId], references: [id])
   items            OrderItem[]
 
   @@index([userId])
   @@index([guestAccessToken])
   @@index([orderNumber])
-  @@index([orderStatus])
-  @@index([paymentStatus])
 }
 
 model OrderItem {
@@ -233,8 +228,8 @@ model ShippingRule {
   minOrderValue Decimal? @db.Decimal(12, 2)
   priority      Int      @default(0)
   isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([pincodeFrom, pincodeTo])
   @@index([isActive, priority])
