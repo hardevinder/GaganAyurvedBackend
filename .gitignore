@@ -17,3 +17,9 @@ dist/
 .env*
 *.env
 .env.portbak
+
+# env files
+.env
+.env.*
+*.env
+.env.portbak
