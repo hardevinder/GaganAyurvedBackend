@@ -44,6 +44,12 @@ function serializeOrderForClient(raw: any) {
     grandTotal: raw.grandTotal != null ? String(raw.grandTotal) : raw.grandTotal,
     paymentMethod: raw.paymentMethod,
     paymentStatus: raw.paymentStatus,
+
+    // ✅ Razorpay fields (NEW - optional to send to client)
+    razorpayOrderId: raw.razorpayOrderId ?? null,
+    razorpayPaymentId: raw.razorpayPaymentId ?? null,
+    paidAt: raw.paidAt ?? null,
+
     invoicePdfPath: raw.invoicePdfPath ?? null,
     items: Array.isArray(raw.items)
       ? raw.items.map((it: any) => ({
@@ -100,14 +106,16 @@ function parsePincode(value: any): number | null {
   }
 }
 
+function normalizePaymentMethod(v: any) {
+  const s = String(v ?? "cod").trim().toLowerCase();
+  // Keep it strict so junk values don’t go to DB
+  if (s === "razorpay") return "razorpay";
+  return "cod";
+}
+
 /* ---------------------------
    CHECKOUT
    POST /api/checkout
-   Body:
-   {
-     cartId?, sessionId?, paymentMethod?,
-     customer: { name, email, phone, address: { line1, line2, city, state, postalCode, country } }
-   }
 --------------------------- */
 export const checkout = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -132,7 +140,7 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
       } catch {}
     }
 
-    const paymentMethod = String(body.paymentMethod ?? "cod");
+    const paymentMethod = normalizePaymentMethod(body.paymentMethod);
 
     const customer = body.customer;
     if (!customer || !customer.name || !customer.email) {
@@ -147,8 +155,10 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
         include: { items: { include: { variant: true } } },
       });
     } else {
-      // avoid passing { userId: undefined } which conflicts with exactOptionalPropertyTypes
-      cart = await findCartForCheckout({ ...(typeof userId !== "undefined" ? { userId } : {}), sessionId });
+      cart = await findCartForCheckout(db, {
+        ...(typeof userId !== "undefined" ? { userId } : {}),
+        sessionId,
+      });
     }
 
     if (!cart || !cart.items || cart.items.length === 0) {
@@ -163,7 +173,7 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
       price: it.price, // Decimal/string
       variant: it.variant,
     }));
-    const totals = computeTotals(cartItems); // shipping/tax/discount will be set below
+    const totals = computeTotals(cartItems);
 
     // shipping address snapshot: accept customer.address or body.address
     const shippingAddress = customer.address ?? body.address ?? null;
@@ -193,6 +203,7 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
         typeof matchingRule.charge === "string"
           ? parseFloat(matchingRule.charge)
           : Number(matchingRule.charge ?? 0);
+
       const mov =
         matchingRule.minOrderValue != null
           ? typeof matchingRule.minOrderValue === "string"
@@ -206,7 +217,6 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
         shippingNumeric = Number.isFinite(ruleCharge) ? ruleCharge : 0;
       }
     } else {
-      // fallback when no rule: keep as 0 (or set your default)
       shippingNumeric = 0;
     }
 
@@ -216,6 +226,11 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
 
     // guest token if guest
     const guestAccessToken = userId ? null : uuidv4();
+
+    // ✅ payment status logic:
+    // - COD: you can treat as "pending" (cash pending) or "unpaid"
+    // - Razorpay: must stay "pending" until /payments/razorpay/verify sets "paid"
+    const initialPaymentStatus = "pending";
 
     // create order & order items inside a transaction and decrement stock
     const createdOrder = await db.$transaction(async (tx) => {
@@ -247,7 +262,7 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
       // create order row to get ID
       const order = await tx.order.create({
         data: {
-          orderNumber: "TEMP", // will set after insert
+          orderNumber: "TEMP",
           guestAccessToken: guestAccessToken,
           userId: userId ?? null,
           customerName: customer.name,
@@ -260,8 +275,10 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
           discount: discountNumeric,
           grandTotal: grandTotalNumeric,
           paymentMethod: paymentMethod,
-          paymentStatus: "pending",
+          paymentStatus: initialPaymentStatus,
           cartId: cart.id ?? null,
+          // Optional: mark orderStatus if you want
+          orderStatus: paymentMethod === "razorpay" ? "awaiting_payment" : "placed",
         },
       });
 
@@ -270,8 +287,7 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
         const variant = ci.variant;
         const productName = variant?.name ?? "Product";
         const sku = variant?.sku ?? null;
-        const price =
-          typeof ci.price === "string" ? parseFloat(ci.price) : Number(ci.price || 0);
+        const price = typeof ci.price === "string" ? parseFloat(ci.price) : Number(ci.price || 0);
         const qty = Number(ci.quantity || 0);
         const total = price * qty;
 
@@ -302,41 +318,46 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
       return updated;
     });
 
-    // Generate invoice PDF (best-effort) using invoiceService
-    try {
-      const pdfFilename = await generateInvoicePdfForOrder(createdOrder);
-      if (pdfFilename) {
-        await prisma.order.update({
-          where: { id: createdOrder.id },
-          data: { invoicePdfPath: pdfFilename },
-        });
-        createdOrder.invoicePdfPath = pdfFilename;
+    // ✅ IMPORTANT CHANGE:
+    // For Razorpay orders, DO NOT generate invoice/email here (payment not confirmed yet).
+    // You should do that after /payments/razorpay/verify marks it paid.
+    if (paymentMethod !== "razorpay") {
+      // Generate invoice PDF (best-effort)
+      try {
+        const pdfFilename = await generateInvoicePdfForOrder(createdOrder);
+        if (pdfFilename) {
+          await db.order.update({
+            where: { id: createdOrder.id },
+            data: { invoicePdfPath: pdfFilename },
+          });
+          createdOrder.invoicePdfPath = pdfFilename;
+        }
+      } catch (pdfErr) {
+        safeLogError(request, pdfErr, "generateInvoicePdf");
       }
-    } catch (pdfErr) {
-      safeLogError(request, pdfErr, "generateInvoicePdf");
-    }
 
-    // Send confirmation email (best-effort)
-    try {
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/api\/?$/i, "");
-      const link = `${baseUrl}/orders/${createdOrder.orderNumber}${
-        guestAccessToken ? `?token=${guestAccessToken}` : ""
-      }`;
-      await sendOrderConfirmationEmail({
-        to: createdOrder.customerEmail,
-        name: createdOrder.customerName,
-        orderNumber: createdOrder.orderNumber,
-        link,
-        pdfFilename: createdOrder.invoicePdfPath ?? null,
-      }).catch((e) => {
-        safeLogError(request, e, "sendOrderConfirmationEmail");
-      });
-    } catch (e) {
-      safeLogError(request, e, "sendOrderConfirmationEmail_outer");
+      // Send confirmation email (best-effort)
+      try {
+        const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/api\/?$/i, "");
+        const link = `${baseUrl}/orders/${createdOrder.orderNumber}${
+          guestAccessToken ? `?token=${guestAccessToken}` : ""
+        }`;
+        await sendOrderConfirmationEmail({
+          to: createdOrder.customerEmail,
+          name: createdOrder.customerName,
+          orderNumber: createdOrder.orderNumber,
+          link,
+          pdfFilename: createdOrder.invoicePdfPath ?? null,
+        }).catch((e) => {
+          safeLogError(request, e, "sendOrderConfirmationEmail");
+        });
+      } catch (e) {
+        safeLogError(request, e, "sendOrderConfirmationEmail_outer");
+      }
     }
 
     // reload fresh order with items to return
-    const fresh = await prisma.order.findUnique({
+    const fresh = await db.order.findUnique({
       where: { id: createdOrder.id },
       include: { items: true },
     });
@@ -350,21 +371,28 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
             name: matchingRule.name,
             pincodeFrom: matchingRule.pincodeFrom,
             pincodeTo: matchingRule.pincodeTo,
-            charge:
-              matchingRule.charge != null ? String(matchingRule.charge) : null,
+            charge: matchingRule.charge != null ? String(matchingRule.charge) : null,
             minOrderValue:
-              matchingRule.minOrderValue != null
-                ? String(matchingRule.minOrderValue)
-                : null,
+              matchingRule.minOrderValue != null ? String(matchingRule.minOrderValue) : null,
             priority: matchingRule.priority,
           }
         : null,
+
+      // ✅ Tell frontend what to do next
+      requiresOnlinePayment: paymentMethod === "razorpay",
+      nextPaymentStep:
+        paymentMethod === "razorpay"
+          ? {
+              // these endpoints exist from your new Razorpay routes
+              createOrderUrl: "/api/payments/razorpay/create-order",
+              verifyUrl: "/api/payments/razorpay/verify",
+            }
+          : null,
     };
     if (guestAccessToken) resp.guestAccessToken = guestAccessToken;
 
     return reply.send(resp);
   } catch (err: any) {
-    // Handle expected stock/variant errors with friendly messages
     if (err?.code === "INSUFFICIENT_STOCK" || String(err.message).startsWith("InsufficientStock")) {
       const available = err?.available ?? null;
       return reply.code(400).send({ error: "Insufficient stock", available });
@@ -382,22 +410,19 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
    Helper: find cart for checkout
    Prefer userId, then sessionId
 --------------------------- */
-async function findCartForCheckout({
-  userId,
-  sessionId,
-}: {
-  userId?: number;
-  sessionId?: string;
-}) {
+async function findCartForCheckout(
+  db: PrismaClient,
+  { userId, sessionId }: { userId?: number; sessionId?: string }
+) {
   if (userId) {
-    const cart = await prisma.cart.findFirst({
+    const cart = await db.cart.findFirst({
       where: { userId },
       include: { items: { include: { variant: true } } },
     });
     if (cart) return cart;
   }
   if (sessionId) {
-    const cart = await prisma.cart.findFirst({
+    const cart = await db.cart.findFirst({
       where: { sessionId },
       include: { items: { include: { variant: true } } },
     });

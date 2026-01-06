@@ -1,7 +1,6 @@
 // src/controllers/orderController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
 import { Prisma } from "@prisma/client"; // Prisma.Decimal
-// import { v4 as uuidv4 } from "uuid";
 
 type PlaceOrderBody = {
   userId?: number;
@@ -17,7 +16,7 @@ type PlaceOrderBody = {
     country?: string;
     isDefault?: boolean;
   };
-  paymentMethod?: string;
+  // paymentMethod?: string; // ❌ ignored (online only)
   customerEmail?: string;
   customerPhone?: string;
   customerName?: string;
@@ -76,7 +75,8 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
     let subtotal = new Prisma.Decimal(0);
     for (const it of items) {
       const v = byId.get(it.variantId);
-      const priceDecimal = v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
+      const priceDecimal =
+        v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
       subtotal = subtotal.add(priceDecimal.mul(it.quantity));
     }
 
@@ -130,7 +130,8 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
 
     const orderItemsCreate = items.map((it) => {
       const v = byId.get(it.variantId);
-      const priceDec = v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
+      const priceDec =
+        v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
       const totalDec = priceDec.mul(it.quantity);
       return {
         variantId: v.id,
@@ -147,9 +148,12 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
       select: { id: true, name: true, email: true, phone: true },
     });
 
-    // guest token for guests (if no userId; here user exists because we required it)
-    const guestAccessToken = null;
+    // online-only: razorpay
+    const paymentMethod = "razorpay";
+    const paymentStatus = "pending"; // will become "paid" after verify
+    const orderStatus = "awaiting_payment";
 
+    const guestAccessToken = null;
     const orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
 
     const createdOrder = await prisma.$transaction(async (tx: any) => {
@@ -176,8 +180,9 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
           tax: taxDecimal,
           discount: discountDecimal,
           grandTotal,
-          paymentMethod: body.paymentMethod ?? "unknown",
-          paymentStatus: "pending",
+          paymentMethod,
+          paymentStatus,
+          orderStatus,
           items: {
             create: orderItemsCreate,
           },
@@ -189,8 +194,13 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
     });
 
     return reply.status(201).send({
-      message: "Order placed successfully",
+      message: "Order created. Proceed to online payment.",
       order: createdOrder,
+      requiresOnlinePayment: true,
+      nextPaymentStep: {
+        createOrderUrl: "/api/payments/razorpay/create-order",
+        verifyUrl: "/api/payments/razorpay/verify",
+      },
       appliedShippingRule: matchingRule
         ? {
             id: matchingRule.id,
@@ -205,7 +215,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
   } catch (err: any) {
     (req as any).log?.error?.({ err }, "placeOrder failed");
     return reply.status(500).send({
-      error: "Failed to place order",
+      error: "Failed to create order",
       details: err?.message ?? String(err),
     });
   }

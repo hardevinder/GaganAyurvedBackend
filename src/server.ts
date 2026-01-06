@@ -26,6 +26,9 @@ import * as shippingCtrl from "./controllers/admin/shippingRulesController";
 import adminOrdersRoutes from "./routes/admin/orders";
 import authPlugin from "./plugins/auth";
 
+// ✅ NEW: Razorpay routes (create-order + verify, no webhook for now)
+import { razorpayPaymentsRoutes } from "./routes/payments.razorpay";
+
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 1200);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -180,6 +183,9 @@ async function start() {
         return reply.code(500).send({ error: err?.message || "Internal error" });
       }
     });
+
+    // ✅ NEW: Razorpay payment routes (no webhook for now)
+    app.register(razorpayPaymentsRoutes, { prefix: "/api" });
 
     app.register(authRoutes, { prefix: "/api/auth" });
     app.register(userRoutes, { prefix: "/api" });

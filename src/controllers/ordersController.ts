@@ -39,6 +39,12 @@ function serializeOrderForClient(raw: any) {
     grandTotal: raw.grandTotal != null ? String(raw.grandTotal) : raw.grandTotal,
     paymentMethod: raw.paymentMethod,
     paymentStatus: raw.paymentStatus,
+
+    // ✅ Razorpay fields (optional, helpful)
+    razorpayOrderId: raw.razorpayOrderId ?? null,
+    razorpayPaymentId: raw.razorpayPaymentId ?? null,
+    paidAt: raw.paidAt ?? null,
+
     invoicePdfPath: raw.invoicePdfPath ?? null,
     items: Array.isArray(raw.items)
       ? raw.items.map((it: any) => ({
@@ -80,10 +86,11 @@ async function resolveInvoiceFilePath(invoicePdfPath: string | null | undefined)
 
 /* ---------------------------
    LIST ORDERS (public / authenticated)
-   Supports optional q (text search), page, pageSize
 --------------------------- */
 export const listOrders = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
+    const db: PrismaClient = (request as any).server?.prisma ?? prisma;
+
     const q = (request.query as any)?.q ?? undefined;
     const page = Math.max(Number((request.query as any)?.page ?? 1), 1);
     const pageSize = Math.min(Math.max(Number((request.query as any)?.pageSize ?? 20), 1), 200);
@@ -105,14 +112,14 @@ export const listOrders = async (request: FastifyRequest, reply: FastifyReply) =
     }
 
     const [orders, total] = await Promise.all([
-      prisma.order.findMany({
+      db.order.findMany({
         where,
         include: { items: true, user: true },
         orderBy: { createdAt: "desc" },
         skip,
         take: pageSize,
       }),
-      prisma.order.count({ where }),
+      db.order.count({ where }),
     ]);
 
     return reply.send({
@@ -128,11 +135,13 @@ export const listOrders = async (request: FastifyRequest, reply: FastifyReply) =
 /* GET /api/orders/:orderNumber */
 export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
+    const db: PrismaClient = (request as any).server?.prisma ?? prisma;
+
     const params: any = request.params || {};
     const orderNumber = String(params.orderNumber || "");
     if (!orderNumber) return reply.code(400).send({ error: "orderNumber required" });
 
-    const order = await prisma.order.findUnique({
+    const order = await db.order.findUnique({
       where: { orderNumber },
       include: { items: true, user: true },
     });
@@ -166,11 +175,13 @@ export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => 
 /* GET /api/orders/:orderNumber/invoice.pdf */
 export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
+    const db: PrismaClient = (request as any).server?.prisma ?? prisma;
+
     const params: any = request.params || {};
     const orderNumber = String(params.orderNumber || "");
     if (!orderNumber) return reply.code(400).send({ error: "orderNumber required" });
 
-    const order = await prisma.order.findUnique({ where: { orderNumber } });
+    const order = await db.order.findUnique({ where: { orderNumber } });
     if (!order) return reply.code(404).send({ error: "Order not found" });
 
     const reqAny: any = request;
@@ -189,6 +200,11 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
       if (!guestToken || order.guestAccessToken !== guestToken) {
         return reply.code(403).send({ error: "Forbidden - guest token required" });
       }
+    }
+
+    // ✅ Friendly: invoice only after payment success
+    if (String(order.paymentStatus || "").toLowerCase() !== "paid") {
+      return reply.code(400).send({ error: "Invoice is available only after successful payment" });
     }
 
     if (!order.invoicePdfPath) {

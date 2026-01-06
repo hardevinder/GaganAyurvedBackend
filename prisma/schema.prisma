@@ -181,8 +181,18 @@ model Order {
   guestAccessToken String?
   invoicePdfPath   String?
   orderNumber      String      @unique
+
   paymentMethod    String
   paymentStatus    String      @default("pending")
+
+  /// =========================
+  /// 💳 RAZORPAY (NEW)
+  /// =========================
+  razorpayOrderId   String?    @db.VarChar(100)
+  razorpayPaymentId String?    @db.VarChar(100)
+  razorpaySignature String?    @db.VarChar(255)
+  paidAt            DateTime?  @db.Timestamptz(6)
+
   shipping         Decimal?    @db.Decimal(12, 2)
   shippingAddress  Json
   subtotal         Decimal     @db.Decimal(12, 2)
@@ -196,6 +206,9 @@ model Order {
   @@index([userId])
   @@index([guestAccessToken])
   @@index([orderNumber])
+
+  @@index([razorpayOrderId])
+  @@index([razorpayPaymentId])
 }
 
 model OrderItem {
